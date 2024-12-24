@@ -5,6 +5,8 @@ build/
 dist/
 wheels/
 *.egg-info
+.ropeproject/
+.mypy_cache/
 
 # Virtual environments
 .venv
