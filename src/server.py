@@ -5,6 +5,7 @@ import mcp.types as types
 from mcp.server import Server, NotificationOptions
 from mcp.server.models import InitializationOptions
 import mcp.server.stdio
+from datetime import datetime, timedelta
 
 # Initialize server
 server = Server("crypto-server")
@@ -15,7 +16,7 @@ SUPPORTED_EXCHANGES = {
     'coinbase': ccxt.coinbase,
     'kraken': ccxt.kraken,
     'kucoin': ccxt.kucoin,
-    'ftx': ccxt.hyperliquid,
+    'hyperliquid': ccxt.hyperliquid,
     'huobi': ccxt.huobi,
     'bitfinex': ccxt.bitfinex,
     'bybit': ccxt.bybit,
@@ -25,6 +26,7 @@ SUPPORTED_EXCHANGES = {
 
 # Exchange instances cache
 exchange_instances = {}
+
 
 async def get_exchange(exchange_id: str) -> ccxt.Exchange:
     """Get or create an exchange instance."""
@@ -37,6 +39,7 @@ async def get_exchange(exchange_id: str) -> ccxt.Exchange:
         exchange_instances[exchange_id] = exchange_class()
 
     return exchange_instances[exchange_id]
+
 
 async def format_ticker(ticker: Dict[str, Any], exchange_id: str) -> str:
     """Format ticker data into a readable string."""
@@ -52,6 +55,7 @@ async def format_ticker(ticker: Dict[str, Any], exchange_id: str) -> str:
         "---"
     )
 
+
 def get_exchange_schema() -> Dict[str, Any]:
     """Get the JSON schema for exchange selection."""
     return {
@@ -61,10 +65,43 @@ def get_exchange_schema() -> Dict[str, Any]:
         "default": "binance"
     }
 
+
+def format_ohlcv_data(ohlcv_data: List[List], timeframe: str) -> str:
+    """Format OHLCV data into a readable string with price changes."""
+    formatted_data = []
+
+    for i, candle in enumerate(ohlcv_data):
+        timestamp, open_price, high, low, close, volume = candle
+
+        # Calculate price change from previous close if available
+        price_change = ""
+        if i > 0:
+            prev_close = ohlcv_data[i-1][4]
+            change_pct = ((close - prev_close) / prev_close) * 100
+            price_change = f"Change: {change_pct:+.2f}%"
+
+        # Format the candle data
+        dt = datetime.fromtimestamp(timestamp/1000).strftime('%Y-%m-%d %H:%M:%S')
+        candle_str = (
+            f"Time: {dt}\n"
+            f"Open: {open_price:.8f}\n"
+            f"High: {high:.8f}\n"
+            f"Low: {low:.8f}\n"
+            f"Close: {close:.8f}\n"
+            f"Volume: {volume:.2f}\n"
+            f"{price_change}\n"
+            "---"
+        )
+        formatted_data.append(candle_str)
+
+    return "\n".join(formatted_data)
+
+
 @server.list_tools()
 async def handle_list_tools() -> List[types.Tool]:
     """List available cryptocurrency tools."""
     return [
+        # Market Data Tools
         types.Tool(
             name="get-price",
             description="Get current price of a cryptocurrency pair from a specific exchange",
@@ -116,7 +153,71 @@ async def handle_list_tools() -> List[types.Tool]:
                 "type": "object",
                 "properties": {}
             },
-        )
+        ),
+        # Historical Data Tools
+        types.Tool(
+            name="get-historical-ohlcv",
+            description="Get historical OHLCV (candlestick) data for a trading pair",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "Trading pair symbol (e.g., BTC/USDT, ETH/USDT)",
+                    },
+                    "timeframe": {
+                        "type": "string",
+                        "description": "Timeframe for candlesticks (e.g., 1m, 5m, 15m, 1h, 4h, 1d)",
+                        "enum": ["1m", "5m", "15m", "1h", "4h", "1d"],
+                        "default": "1h"
+                    },
+                    "days_back": {
+                        "type": "number",
+                        "description": "Number of days of historical data to fetch (default: 7, max: 30)",
+                        "default": 7,
+                        "maximum": 30
+                    },
+                    "exchange": get_exchange_schema()
+                },
+                "required": ["symbol"],
+            },
+        ),
+        types.Tool(
+            name="get-price-change",
+            description="Get price change statistics over different time periods",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "Trading pair symbol (e.g., BTC/USDT, ETH/USDT)",
+                    },
+                    "exchange": get_exchange_schema()
+                },
+                "required": ["symbol"],
+            },
+        ),
+        types.Tool(
+            name="get-volume-history",
+            description="Get trading volume history over time",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "Trading pair symbol (e.g., BTC/USDT, ETH/USDT)",
+                    },
+                    "days": {
+                        "type": "number",
+                        "description": "Number of days of volume history (default: 7, max: 30)",
+                        "default": 7,
+                        "maximum": 30
+                    },
+                    "exchange": get_exchange_schema()
+                },
+                "required": ["symbol"],
+            },
+        ),
     ]
 
 @server.call_tool()
@@ -184,6 +285,78 @@ async def handle_call_tool(
                 )
             ]
 
+        elif name == "get-historical-ohlcv":
+            symbol = arguments.get("symbol", "").upper()
+            timeframe = arguments.get("timeframe", "1h")
+            days_back = min(int(arguments.get("days_back", 7)), 30)
+
+            # Calculate timestamps
+            since = int((datetime.now() - timedelta(days=days_back)).timestamp() * 1000)
+
+            # Fetch historical data
+            ohlcv = await exchange.fetch_ohlcv(symbol, timeframe, since=since)
+
+            formatted_data = format_ohlcv_data(ohlcv, timeframe)
+            return [
+                types.TextContent(
+                    type="text",
+                    text=f"Historical OHLCV data for {symbol} ({timeframe}) on {exchange_id.upper()}:\n\n{formatted_data}"
+                )
+            ]
+
+        elif name == "get-price-change":
+            symbol = arguments.get("symbol", "").upper()
+
+            # Get current price
+            ticker = await exchange.fetch_ticker(symbol)
+            current_price = ticker['last']
+
+            # Get historical prices
+            timeframes = {
+                "1h": (1, "1h"),
+                "24h": (1, "1d"),
+                "7d": (7, "1d"),
+                "30d": (30, "1d")
+            }
+
+            changes = []
+            for label, (days, timeframe) in timeframes.items():
+                since = int((datetime.now() - timedelta(days=days)).timestamp() * 1000)
+                ohlcv = await exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=1)
+                if ohlcv:
+                    start_price = ohlcv[0][1]  # Open price
+                    change_pct = ((current_price - start_price) / start_price) * 100
+                    changes.append(f"{label} change: {change_pct:+.2f}%")
+
+            return [
+                types.TextContent(
+                    type="text",
+                    text=f"Price changes for {symbol} on {exchange_id.upper()}:\n\n" + "\n".join(changes)
+                )
+            ]
+
+        elif name == "get-volume-history":
+            symbol = arguments.get("symbol", "").upper()
+            days = min(int(arguments.get("days", 7)), 30)
+
+            # Get daily volume data
+            since = int((datetime.now() - timedelta(days=days)).timestamp() * 1000)
+            ohlcv = await exchange.fetch_ohlcv(symbol, "1d", since=since)
+
+            volume_data = []
+            for candle in ohlcv:
+                timestamp, _, _, _, _, volume = candle
+                dt = datetime.fromtimestamp(timestamp/1000).strftime('%Y-%m-%d')
+                volume_data.append(f"{dt}: {volume:,.2f}")
+
+            return [
+                types.TextContent(
+                    type="text",
+                    text=f"Daily trading volume history for {symbol} on {exchange_id.upper()}:\n\n" +
+                         "\n".join(volume_data)
+                )
+            ]
+
         else:
             raise ValueError(f"Unknown tool: {name}")
 
@@ -201,12 +374,6 @@ async def handle_call_tool(
         exchange_instances.clear()
 
 
-def run_server():
-    """Wrapper to run the async main function"""
-    asyncio.run(main())
-
-
-
 async def main():
     """Run the server using stdin/stdout streams."""
     async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
@@ -222,6 +389,12 @@ async def main():
                 ),
             ),
         )
+
+
+def run_server():
+    """Wrapper to run the async main function"""
+    asyncio.run(main())
+
 
 if __name__ == "__main__":
     asyncio.run(main())
