@@ -6,6 +6,8 @@ A Model Context Protocol (MCP) server that provides real-time and historical cry
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue)](https://www.python.org)
 [![CCXT](https://img.shields.io/badge/CCXT-Powered-green)](https://github.com/ccxt/ccxt)
 
+<a href="https://glama.ai/mcp/servers/9kbbk1kmg2"><img width="380" height="200" src="https://glama.ai/mcp/servers/9kbbk1kmg2/badge" alt="Cryptocurrency Market Data Server MCP server" /></a>
+
 ## Features
 
 - **Real-time Market Data**
